@@ -1,0 +1,114 @@
+// Create empty chunked file
+				var fileChunkedInformation = new FileCreationInformation
+				{
+					// Server relative url of the document
+					Url = fileName,
+					// Overwrite file if it's already exist
+					Overwrite = true,
+					Content = new byte[] { }
+				};
+
+				int blockSize = 2 * 1024 * 1024;
+
+				if (fileByteArr.Length <= blockSize)
+				{
+					try
+					{
+						//UploadWithoutChunks(target, targetFolder, fileName, fileByteArr);
+						var fileCreationInfo = new FileCreationInformation
+						{
+							Content = fileByteArr,
+							Overwrite = false,
+							Url = fileName
+						};
+
+						ctx.Web.GetFolderByServerRelativeUrl(target).Files.Add(fileCreationInfo);
+						ctx.Load(ctx.Web.GetFolderByServerRelativeUrl(target));
+						ctx.ExecuteQueryAsync();
+					}
+					catch (Exception e)
+					{
+						return $"Error - {e}";
+					}
+
+				}
+				else
+				{
+					Microsoft.SharePoint.Client.File uploadFile = null;
+					// Use large file upload approach
+					ClientResult<long> bytesUploaded = null;
+
+					var bytes = fileByteArr;
+					var filename = fileName;
+					//var destination = targetFolder;
+					var destination = fileLocation;
+
+					Guid uploadId = Guid.NewGuid();
+					byte[] buffer = new byte[blockSize];
+					long fileoffset = 0;
+					long totalBytesRead = 0;
+					int bytesRead;
+					bool first = true;
+					Stream stream = new MemoryStream(bytes);
+
+					// Read data from filesystem in blocks 
+					while ((bytesRead = stream.Read(buffer, 0, buffer.Length)) > 0)
+					{
+						totalBytesRead = totalBytesRead + bytesRead;
+
+						if (first)
+						{
+							using (MemoryStream contentStream = new MemoryStream())
+							{
+								// Add an empty file.
+								FileCreationInformation fileInfo = new FileCreationInformation();
+								fileInfo.ContentStream = contentStream;
+								fileInfo.Url = filename;
+								fileInfo.Overwrite = false;
+								uploadFile = destination.Files.Add(fileInfo);
+
+								// Start upload by uploading the first slice. 
+								using (MemoryStream s = new MemoryStream(buffer))
+								{
+									// Call the start upload method on the first slice
+									bytesUploaded = uploadFile.StartUpload(uploadId, s);
+									destination.Context.ExecuteQuery();
+									// fileoffset is the pointer where the next slice will be added
+									fileoffset = bytesUploaded.Value;
+								}
+
+								// we can only start the upload once
+								first = false;
+							}
+						}
+						else
+						{
+							// Get a reference to our file
+							uploadFile = ctx.Web.GetFileByServerRelativeUrl(destination.ServerRelativeUrl + System.IO.Path.AltDirectorySeparatorChar + filename);
+
+							if (totalBytesRead == stream.Length)
+							{
+								// We've reached the end of the file
+								using (MemoryStream s = new MemoryStream(buffer, 0, bytesRead))
+								{
+									// End sliced upload by calling FinishUpload
+									uploadFile = uploadFile.FinishUpload(uploadId, fileoffset, s);
+									destination.Context.ExecuteQuery();
+								}
+							}
+							else
+							{
+								using (MemoryStream s = new MemoryStream(buffer))
+								{
+									// Continue sliced upload
+									bytesUploaded = uploadFile.ContinueUpload(uploadId, fileoffset, s);
+									destination.Context.ExecuteQuery();
+									// update fileoffset for the next slice
+									fileoffset = bytesUploaded.Value;
+								}
+							}
+						}
+
+					}
+
+				}
